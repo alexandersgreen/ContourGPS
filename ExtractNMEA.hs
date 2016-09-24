@@ -19,8 +19,8 @@ import Text.Read (readMaybe)
 import Data.Time.Clock
 import Data.Time.LocalTime
 
-type Parser a = Parsec String Int a
-
+-- | Run the given command line, returning the exit code, a String containing standard output and
+--   a String containing any error output.
 readShell :: String -> IO (ExitCode,String,String)
 readShell cmd = do
  putStrLn $ "Running: " ++ cmd
@@ -37,18 +37,24 @@ readShell cmd = do
  ex <- waitForProcess pid
  return (ex, out, err)
 
+-- | Invoke ffmpeg to extract the subtitle stream from the given file, using tr to remove any unprintable characters
 extractSubs :: FilePath -> IO (ExitCode,String,String)
 extractSubs file = readShell $ "./ffmpeg -i \"" ++ file ++ "\" -vn -an -scodec copy -f rawvideo - | tr -dc '[:print:]\n'"
 
+-- | append the given width into the filepath
 getBase :: FilePath -> Int -> FilePath
 getBase f w = f ++ "-%" ++ (show w) ++ "d.png"
 
+-- | Invoke ffmpeg to generate a new video from the given video filepath, with the given framerate,
+--   overlaying the image files at the given base filepath with the given framerate, outputting to
+--   the given output file path
 saveOverlays :: FilePath -> Float -> FilePath -> Int -> FilePath -> IO ()
 saveOverlays video videoFrameRate overlayBase overlayFrameRate outputFile = do
  let cmd = "./ffmpeg -y -i '" ++ video ++ "' -r " ++ (show overlayFrameRate) ++ " -i '" ++ overlayBase ++ "' -filter_complex '[0:v][1:v] overlay=0:0:shortest=1 [out]' -map \"[out]\" -vcodec libx264 -r " ++ (show videoFrameRate) ++ " " ++ outputFile
  putStrLn $ "Running: " ++ cmd
  callCommand cmd
 
+-- | Get a String of the video info from the output of ffmpeg
 getVideoInfo :: String -> String
 getVideoInfo info = unlines [x | Just x <- map isVideoInfo (lines info)]
  where
@@ -56,10 +62,14 @@ getVideoInfo info = unlines [x | Just x <- map isVideoInfo (lines info)]
    True -> Just s
    False -> Nothing
 
+-- | a type to represent a video resolution
 type Resolution = (Int,Int)
+-- | a type to represent frame rates
 type FramesPerSecond = Float
+-- | a type to represent the resolution and frame rate of a video
 type VideoMetaData = (Resolution,FramesPerSecond)
 
+-- | Extract the resolution and frame rate from the video info string output by ffmpeg
 videoInfo :: String -> VideoMetaData
 videoInfo info = ((x,y),read fps)
  where 
@@ -68,18 +78,25 @@ videoInfo info = ((x,y),read fps)
   [x,y] = map read $ take 2 $ splitOn "x" xy
   [_,fps] = take 2 $ splitOn " " b
 
+-- | Extract the subtitles and the video meta data from the given video
 extractNMEA :: FilePath -> IO (String,VideoMetaData)
 extractNMEA file = do
  (_,subs,info) <- extractSubs file
  putStrLn info
  return (subs, videoInfo info) 
 
+-- | The Parsec Parser we define will contain an Int state which represents
+--   a checksum of the previously parsed characters
+type Parser a = Parsec String Int a
+
+-- | parse the given char, and modify the checksum state
 char :: Char -> Parser Char
 char c = do
  c' <- P.char c
  modifyState (xor (ord c'))
  return c'
 
+-- | parse the given string
 string :: String -> Parser String
 string [] = return ""
 string (x:xs) = do
@@ -87,12 +104,14 @@ string (x:xs) = do
  xs' <- string xs
  return (x':xs')
 
+-- | update the default noneOf to update checksum
 noneOf :: String -> Parser Char
 noneOf s = do
  c' <- P.noneOf s
  modifyState (xor (ord c'))
  return c'
 
+-- | update the default oneOf to update checksum
 oneOf :: String -> Parser Char
 oneOf s = do
  c' <- P.oneOf s
