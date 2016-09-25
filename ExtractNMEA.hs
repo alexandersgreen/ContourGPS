@@ -104,14 +104,14 @@ string (x:xs) = do
  xs' <- string xs
  return (x':xs')
 
--- | update the default noneOf to update checksum
+-- | noneOf and update checksum
 noneOf :: String -> Parser Char
 noneOf s = do
  c' <- P.noneOf s
  modifyState (xor (ord c'))
  return c'
 
--- | update the default oneOf to update checksum
+-- | oneOf and update checksum
 oneOf :: String -> Parser Char
 oneOf s = do
  c' <- P.oneOf s
@@ -161,12 +161,14 @@ data NMEA =
  | GPRMC Timestamp AorV Latitude Longitude Speed DegreesTrue Date Variation EorW
  deriving Show
 
+-- | Parse multiple NMEA sentences
 nmea :: Parser [Maybe (NMEA,Bool)]
 nmea = do
  sentences <- many (nmeaSentence >>= \x -> char '\n' >> return x)
  eof
  return sentences
 
+-- | Parse an NMEA sentence, checking the checksum
 nmeaSentence :: Parser (Maybe (NMEA,Bool))
 nmeaSentence = do
  mnmea <- optionMaybe $ try nmeaSentence'
@@ -177,6 +179,7 @@ nmeaSentence = do
                         Just cs' -> return $ Just (s, cs == cs')
                         Nothing -> return $ Just (s, False)
 
+-- | Parse an NMEA sentece, including the generated checksum, and the parsed checksum
 nmeaSentence' :: Parser (NMEA, Int, Maybe Int)
 nmeaSentence' = do
  many $ noneOf "$"
@@ -186,6 +189,8 @@ nmeaSentence' = do
  cs' <- optionMaybeTo '\n' intFromHex
  return (s,cs,join cs')
 
+-- | A wrapper function that resets the checksum before parsing, and then returns
+--   the generated checksum along with the result of parsing
 withChecksum :: Parser a -> Parser (a,Int)
 withChecksum p = do
  putState 0
@@ -193,9 +198,11 @@ withChecksum p = do
  cs <- getState
  return (s,cs)
 
+-- | Parse an NMEA sentence, which is either a GPGGA or GPRMC sentence
 sentences :: Parser NMEA
 sentences = choice [gpgga,gprmc]
 
+-- | Parse a GPGGA sentence
 gpgga :: Parser NMEA
 gpgga = do
  try $ string "GPGGA,"
@@ -224,6 +231,7 @@ gpgga = do
  diffId <- optionNatTo '*'
  return $ GPGGA timestamp latitude longitude quality numberOfSatellites hdop altitude m1 geoidalSeparation m2 ageDiff diffId
 
+-- | Parse a GPRMC sentence
 gprmc :: Parser NMEA
 gprmc = do
  try $ string "GPRMC,"
@@ -246,12 +254,14 @@ gprmc = do
  ew <- optionMaybeTo '*' eOrW
  return $ GPRMC timestamp av latitude longitude speed degreesTrue date variation ew
 
+-- | Try the given parser, and consume input after that until the given character
 optionMaybeTo :: Char -> Parser a -> Parser (Maybe a)
 optionMaybeTo c p = do
  r <- optionMaybe p
  many $ noneOf [c]
  return r
 
+-- | Parse a Natural Number as an Int
 nat :: Parser Int
 nat = do
  s <- many1 $ oneOf "0123456789"
@@ -259,11 +269,13 @@ nat = do
 
 optionNatTo c = optionMaybeTo c nat 
 
+-- | Parse a Natural Number using only the next n chars.
 natFromNext :: Int -> Parser Int
 natFromNext n = do
  s <- count n $ oneOf "0123456789"
  return $ read s      
 
+-- | Parse until the given char, and read as a float
 floatTo :: Char -> Parser Float
 floatTo c = do
  s <- many $ noneOf [c]
@@ -271,6 +283,7 @@ floatTo c = do
 
 optionFloatTo c = optionMaybe (floatTo c) 
 
+-- | Parse a timestamp formatted as hhmmss.ss*,
 timestamp :: Parser DiffTime
 timestamp = do
  h <- natFromNext 2
@@ -278,6 +291,7 @@ timestamp = do
  s <- floatTo ','
  return $ toDiffTime h m s
 
+-- | Create a DiffTime from the given hours, mintues, and seconds.
 toDiffTime :: Int -> Int -> Float -> DiffTime
 toDiffTime h m s = picosecondsToDiffTime pico
  where
@@ -286,7 +300,7 @@ toDiffTime h m s = picosecondsToDiffTime pico
   secs = mins * 60
   mins = (h * 60) + m  
 
-
+-- | Parse a latitude
 latitude :: Parser Latitude'
 latitude = do
  degs <- natFromNext 2
@@ -296,6 +310,7 @@ latitude = do
  nOrS <- choice [try (char 'N'),char 'S'] 
  return $ if (nOrS == 'N') then lat else -lat
 
+-- | Parse a longitude
 longitude :: Parser Longitude'
 longitude = do
  degs <- natFromNext 3
@@ -305,24 +320,29 @@ longitude = do
  eOrW <- choice [try (char 'E'),char 'W'] 
  return $ if (eOrW == 'E') then lon else -lon
 
+-- | Convert an angle from Degrees\Minutes into a decimal angle
 decimalDegrees :: Int -> Float -> Float
 decimalDegrees degs mins = (fromIntegral degs) + (mins / 60)
 
+-- | Parse and E or a W
 eOrW :: Parser EorW'
 eOrW = choice [e,w]
  where
   e = try (char 'E') >> return E
   w = try (char 'W') >> return W
 
+-- | Parse an M
 m :: Parser M'
 m = char 'M' >> return M
 
+-- | Parse and A or a V
 aOrV :: Parser  AorV'
 aOrV = choice [a,v]
  where
   a = try (char 'A') >> return A
   v = try (char 'V') >> return V
 
+-- | Parse a HexString and return as an Int if possible
 intFromHex :: Parser (Maybe Int)
 intFromHex = do
  s <- many (noneOf "\n")          
@@ -333,16 +353,22 @@ optionReadHex s = case readHex s of
  [(cs,_)] -> Just cs
  _ -> Nothing
 
+-- | Given a video file, extract the video info and NMEA data,
+--   parse the NMEA data, and return the result along with the video info and the String
+--   that was parsed
 parseFile' :: FilePath -> IO (Either ParseError [Maybe (NMEA,Bool)],VideoMetaData,String)
 parseFile' f = do
  (s,info) <- extractNMEA f
  return $ (runParser nmea 0 f s, info, s)
 
+-- | Given a video file, extract the video info and NEMA data,
+--   parse each line of NMEA data separately, returning the results and the video info
 parseFile :: FilePath -> IO ([Either ParseError (Maybe (NMEA,Bool))],VideoMetaData)
 parseFile f = do
  (s,info) <- extractNMEA f
  return $ (map (runParser nmeaSentence 0 f) (lines s), info)
 
+-- | A location contains a timestamp, as well as latitude and longitude
 data Location = Location {
      time :: DiffTime,
      lat :: Float,
@@ -352,14 +378,21 @@ data Location = Location {
 instance Show Location where
  show (Location time lat lon) = "(" ++ show (timeToTimeOfDay time) ++ "," ++ show lat ++ "," ++ show lon ++ ")"
 
+-- | Any type that can possibly return a location, can be thought of as a LocationProvider
 class LocationProvider a where
  getLocation :: a -> Maybe Location
 
+-- | NMEA data can be used as a Location provider.
+--   Note we currently only use the GPGGA sentences, as the ContourGPS creates a GPGGA and GPRMC for the same
+--   time stamp, and that means we would be duplcating each location. We would need both sentences if\when we
+--   want to extract more information than just locations...
 instance LocationProvider NMEA where
  getLocation (GPGGA (Just time) (Just lat) (Just lon) _ _ _ _ _ _ _ _ _) = Just $ Location time lat lon
  --getLocation (GPRMC (Just time) _ (Just lat) (Just lon) _ _ _ _ _) = Just $ Location time lat lon
  getLocation _ = Nothing
 
+-- | Given a video file, try to extract the locations and the video info, failing to parse if any line of
+-- NMEA data fails.
 getLocations' :: FilePath -> IO ([Maybe Location],VideoMetaData)
 getLocations' file = do
  (exs,vmd,s) <- parseFile' file
@@ -369,15 +402,18 @@ getLocations' file = do
     printErrorLine e s
     error $ show e
 
+-- | Given a video file, try to extract the locations and the video info, parsing each line of NMEA data
+-- separately
 getLocations :: FilePath -> IO ([Maybe Location],VideoMetaData)
 getLocations file = do
  (exs,vmd) <- parseFile file
  return ([ getLocation n | Right (Just (n@(GPGGA _ _ _ _ _ _ _ _ _ _ _ _),True)) <- exs], vmd)
  
-    
+-- | A helper function to only print a few lines from the source String, surrouding a ParseError    
 printErrorLine :: ParseError -> String -> IO ()
 printErrorLine e s = printLines (getLinesUpto 4 (sourceLine (errorPos e)) (lines s))
 
+-- | Print the given Strings, one per line
 printLines :: [String] -> IO ()
 printLines [] = return ()
 printLines (x:xs) = putStrLn x >> printLines xs
@@ -385,10 +421,11 @@ printLines (x:xs) = putStrLn x >> printLines xs
 getLinesUpto :: Int -> Int -> [String] -> [String]
 getLinesUpto num l s = drop (l - num) (take l s)
 
-
+-- | A file used for testing (which isn't in the repo)
 testFile :: FilePath
 testFile = "/alex/GPS/cycle.mov"
 
+-- | Extract all the locations from the test file
 test :: IO [Maybe Location]
 test = getLocations testFile >>= (return . fst)
 
